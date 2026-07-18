@@ -4,7 +4,7 @@ Canvex is a collaborative whiteboard project built around FastAPI, PostgreSQL, R
 
 ## Current Phase
 
-Phase 9 is implemented with audit log querying, session replay, Git-style board branching, and the AI pipeline:
+Phases 0–10 are implemented: audit log querying, session replay, Git-style board branching, the AI pipeline, plus the Phase 10 analytics, webhooks, export, and share-link features. Phase 11 (complete UI) is partially implemented; Phases 12–13 (production hardening, deployment) have not started.
 
 - SQLAlchemy 2.0 async models
 - Alembic migration setup
@@ -46,17 +46,23 @@ Phase 9 is implemented with audit log querying, session replay, Git-style board 
 - AI interaction ledger and `GET /pages/{page_id}/ai-log`
 - AI feedback endpoint: `POST /ai/{interaction_id}/feedback`
 - Semantic search endpoint: `GET /search?q=...`
+- Canvas analytics: `GET /pages/{page_id}/analytics` with edit heatmap buckets, per-user participation, and AI usage stats
+- Webhook registration per channel and HMAC-SHA256 signed delivery with exponential-backoff retries via a dedicated `webhook-worker`
+- PNG/PDF export: `GET /pages/{page_id}/export?format=png|pdf` (server-side Pillow renderer, off the event loop)
+- Read-only share links: `POST /pages/{page_id}/share` JWT tokens, a `/view/{token}` viewer page, and a receive-only WebSocket mode
+- Automatic access-token refresh in the frontend API client (single-flight, rotation-aware)
+- WebSocket auto-reconnect with capped backoff, immediate reconnect when the browser comes back online
 
 ## Local Full-Stack Setup
 
-The backend, AI worker, and frontend run as separate development processes:
+The backend, AI worker, webhook worker, and frontend run as separate development processes:
 
 - FastAPI API: `http://localhost:8000`
 - Vite frontend: `http://localhost:5173`
 - PostgreSQL: Docker service `postgres`
 - Redis: Docker service `redis`
 
-Start infrastructure first, then run the backend, AI worker, and frontend in separate terminals.
+Start infrastructure first, then run the backend, the workers, and the frontend in separate terminals.
 
 ## Local Backend Setup
 
@@ -102,6 +108,13 @@ arq app.workers.ai_worker.WorkerSettings
 ```
 
 If `GEMINI_API_KEY` is empty, Canvex still creates AI ledger rows and local deterministic responses for development.
+
+8. Start the webhook delivery worker in a separate terminal (only needed if channel webhooks are registered):
+
+```powershell
+cd backend
+arq app.workers.webhook_worker.WorkerSettings
+```
 
 ## Local Frontend Setup
 
@@ -170,3 +183,26 @@ npm run build
 - The worker writes every AI attempt to `ai_interactions`, creates an AI text element on success, computes an embedding, and publishes an `ai:response` message through Redis.
 - Connected WebSocket clients subscribe to Redis AI response messages and render generated answers live.
 - Feedback rows are injected into future prompts per channel so repeated corrections improve responses.
+
+## Phase 10 Notes
+
+- Every element mutation upserts a `canvas_analytics` row keyed by `(page, user, day, 200px region bucket)`; WebSocket connection time is accumulated per user per day on disconnect.
+- `GET /pages/{page_id}/analytics` returns the current-month edit heatmap, per-user participation (element counts plus tracked or estimated active seconds), and AI usage grouped by trigger type.
+- `POST /channels/{channel_id}/webhooks` returns the signing secret once; deliveries are HMAC-SHA256 signed (`X-Canvex-Signature`) and retried with 5s/25s/125s backoff by the `webhook-worker`.
+- `GET /pages/{page_id}/export?format=png|pdf` renders the page server-side with Pillow in a worker thread.
+- `POST /pages/{page_id}/share` issues a stateless read-only JWT; `/view/{token}` renders the page and follows live updates over a receive-only WebSocket. Share viewers cannot send mutations and do not keep replay sessions alive.
+
+## Audit Fixes (2026-07-17)
+
+A full-codebase review against the implementation plan fixed ten bugs:
+
+- Frontend: the stored refresh token is now actually used — a single-flight axios interceptor refreshes on 401 and retries, so sessions survive past the 15-minute access-token expiry.
+- Frontend: the page WebSocket auto-reconnects with capped exponential backoff and reconnects immediately on the browser `online` event, so queued offline operations reliably replay.
+- Frontend: remote element locks now expire client-side after the lock's TTL instead of leaving elements frozen until the locker disconnects.
+- Frontend: text width, font size, and sticky background color are persisted in element content, so collaborators, the share viewer, and exports render them faithfully; rect/ellipse dimensions are persisted too.
+- Frontend: remote cursors are pruned after ~6s of inactivity to match the server-side TTL.
+- Backend: `cursor:move` events are recorded to `session_events`, making the existing replay claim true.
+- Backend: failed AI jobs roll back before writing their `failed` ledger row, so DB errors can no longer lose the `ai_interactions` entry.
+- Backend: PNG/PDF export rendering runs off the event loop.
+- Backend: page point-in-time restore soft-deletes elements that did not yet exist at the target timestamp.
+- Backend: REST element update/delete now respect Redis element locks (423), matching the WebSocket path.

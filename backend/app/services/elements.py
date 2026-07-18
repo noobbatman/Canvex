@@ -13,6 +13,7 @@ from app.models.element import ElementPermission, WhiteboardElement
 from app.models.enums import EventOperation, MemberRole
 from app.models.page import WhiteboardPage
 from app.schemas.whiteboard import ElementCreate, ElementUpdate
+from app.services.analytics import record_canvas_analytics
 from app.services.element_events import element_state, log_element_event
 
 
@@ -89,6 +90,7 @@ async def create_element_for_page(
         after_state=element_state(element),
         vector_clock=payload.vector_clock,
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)
     return element
 
 
@@ -119,6 +121,7 @@ async def update_element_state(
         after_state=element_state(element),
         vector_clock=payload.vector_clock,
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)
     return element
 
 
@@ -142,3 +145,4 @@ async def delete_element_state(
         before_state=before_state,
         after_state=element_state(element),
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)

@@ -3,11 +3,27 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import AuthPanel from './components/AuthPanel'
 import CanvasBoard from './components/CanvasBoard'
 import Sidebar from './components/Sidebar'
+import SharedPageViewer from './components/SharedPageViewer'
 import { createChannel, createPage, getChannel, getMe, listChannels, logout } from './lib/api'
 import { clearSession, loadSession } from './lib/storage'
 import type { AuthSession, ChannelDetail, ChannelListItem, PageSummary } from './types'
 
+const SHARE_VIEW_PATH_PATTERN = /^\/view\/([^/]+)$/
+
 const App = () => {
+  const shareToken = useMemo(() => {
+    const match = window.location.pathname.match(SHARE_VIEW_PATH_PATTERN)
+    return match ? decodeURIComponent(match[1]) : null
+  }, [])
+
+  if (shareToken) {
+    return <SharedPageViewer token={shareToken} />
+  }
+
+  return <AuthenticatedApp />
+}
+
+const AuthenticatedApp = () => {
   const [session, setSession] = useState<AuthSession | null>(loadSession())
   const [channels, setChannels] = useState<ChannelListItem[]>([])
   const [selectedChannel, setSelectedChannel] = useState<ChannelDetail | null>(null)

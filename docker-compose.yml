@@ -65,5 +65,23 @@ services:
       - ./backend:/app
     command: arq app.workers.ai_worker.WorkerSettings
 
+  webhook-worker:
+    build:
+      context: ./backend
+    container_name: canvex-webhook-worker
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://canvex:canvex@postgres:5432/canvex
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: arq app.workers.webhook_worker.WorkerSettings
+
 volumes:
   postgres_data:

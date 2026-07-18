@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -29,6 +30,7 @@ from app.schemas.channel import (
     MemberRoleUpdate,
     PageSummary,
 )
+from app.services.webhooks import dispatch_webhook_event_for_channel
 
 router = APIRouter(tags=["channels"])
 
@@ -331,5 +333,18 @@ async def accept_invite(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You are already a member of this channel") from None
+
+    with suppress(Exception):
+        await dispatch_webhook_event_for_channel(
+            db,
+            channel_id=invite.channel_id,
+            event_type="member:joined",
+            payload={
+                "channel_id": str(invite.channel_id),
+                "user_id": str(current_user.id),
+                "display_name": current_user.display_name,
+                "role": invite.role_on_join.value,
+            },
+        )
 
     return channel_list_item(channel, invite.role_on_join)

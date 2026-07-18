@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import math
 import re
 import time
+from contextlib import suppress
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
@@ -24,12 +26,15 @@ from app.models.page import WhiteboardPage
 from app.schemas.whiteboard import ElementCreate
 from app.services.element_events import element_state
 from app.services.elements import create_element_for_page
+from app.services.webhooks import dispatch_webhook_event_for_page
 
 MATH_PATTERN = re.compile(r"[-+]?\d*\.?\d*\s*x\s*(?:[+-]\s*\d+(?:\.\d+)?)?\s*=\s*[-+]?\d+(?:\.\d+)?", re.I)
 AI_RESPONSE_CHANNEL_PREFIX = "ai:response:"
-EMBEDDING_DIMENSIONS = 1536
+EMBEDDING_DIMENSIONS = 768  # text-embedding-004 output size
+TEXT_EMBEDDING_DEBOUNCE_SECONDS = 3.0
 
 _arq_pool = None
+_embedding_debounce_tasks: dict[UUID, asyncio.Task] = {}
 
 
 def redis_settings() -> RedisSettings:
@@ -108,9 +113,24 @@ async def enqueue_ai_analysis(
     )
 
 
+async def _run_debounced_text_embedding(element_id: UUID) -> None:
+    try:
+        await asyncio.sleep(TEXT_EMBEDDING_DEBOUNCE_SECONDS)
+        pool = await get_arq_pool()
+        await pool.enqueue_job("embed_element_text", element_id=str(element_id))
+    finally:
+        if _embedding_debounce_tasks.get(element_id) is asyncio.current_task():
+            _embedding_debounce_tasks.pop(element_id, None)
+
+
 async def enqueue_text_embedding(*, element_id: UUID) -> None:
-    pool = await get_arq_pool()
-    await pool.enqueue_job("embed_element_text", element_id=str(element_id))
+    """Schedule an embedding job, restarting the delay on every call so the
+    Gemini embedding API is only hit once typing has stopped for a few
+    seconds, instead of on every keystroke/update."""
+    pending = _embedding_debounce_tasks.get(element_id)
+    if pending is not None and not pending.done():
+        pending.cancel()
+    _embedding_debounce_tasks[element_id] = asyncio.create_task(_run_debounced_text_embedding(element_id))
 
 
 def save_snapshot(snapshot_b64: str | None) -> str | None:
@@ -378,10 +398,36 @@ async def analyze_canvas_job(
                 }
             ),
         )
+        with suppress(Exception):
+            await dispatch_webhook_event_for_page(
+                db,
+                page_id=page_id,
+                event_type="ai:response",
+                payload={
+                    "element": element_state(response_element),
+                    "interaction_id": str(interaction.id),
+                    "trigger_type": trigger_type.value,
+                },
+            )
     except Exception as exc:
-        interaction.status = "failed"
-        interaction.error_message = str(exc)
-        interaction.latency_ms = int((time.perf_counter() - started) * 1000)
+        # The failure may be a DB error from the try block (element insert,
+        # embedding flush, ...), which leaves the session in a pending-rollback
+        # state where a plain commit() would raise and the ledger row would be
+        # lost. Roll back first, then write a fresh failure row so every AI
+        # attempt is recorded per plan 9.5 — the rollback discards the
+        # "pending" row added above.
+        await db.rollback()
+        interaction = AIInteraction(
+            page_id=page_id,
+            trigger_element_id=trigger_element_id,
+            trigger_type=trigger_type,
+            canvas_snapshot_url=snapshot_url,
+            prompt_sent=prompt,
+            status="failed",
+            error_message=str(exc),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        db.add(interaction)
         await db.commit()
         raise
 

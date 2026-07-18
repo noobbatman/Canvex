@@ -41,3 +41,28 @@ def hash_refresh_token(token: str) -> str:
 
 def refresh_token_expires_at() -> datetime:
     return datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
+
+
+def create_share_token(page_id: UUID, expires_in_hours: int) -> tuple[str, datetime]:
+    """Stateless read-only share link token, per plan 10.6 — no DB row, no
+    revocation beyond letting the expiry pass (same trade-off as access
+    tokens elsewhere in this app)."""
+    expires_at = datetime.now(UTC) + timedelta(hours=expires_in_hours)
+    payload = {
+        "page_id": str(page_id),
+        "read_only": True,
+        "type": "share",
+        "exp": expires_at,
+    }
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return token, expires_at
+
+
+def decode_share_token(token: str) -> UUID:
+    """Raises jose.JWTError/KeyError/ValueError for any invalid, expired, or
+    wrong-type token — callers decide how to translate that (HTTP 401, WS
+    policy-violation close, etc.)."""
+    payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    if payload.get("type") != "share" or payload.get("read_only") is not True:
+        raise ValueError("Not a valid share token")
+    return UUID(str(payload["page_id"]))
