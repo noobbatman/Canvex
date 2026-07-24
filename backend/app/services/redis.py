@@ -28,3 +28,18 @@ async def assert_no_foreign_lock(redis: Redis, element_id: UUID, user_id: UUID) 
     locked_by = await redis.get(lock_key(element_id))
     if locked_by is not None and locked_by != str(user_id):
         raise HTTPException(status_code=423, detail="Element is locked by another user")
+
+
+async def acquire_element_lock(redis: Redis, element_id: UUID, user_id: UUID, ttl_seconds: int) -> None:
+    """Atomically acquire the element lock with SET NX so two users can't both
+    win it (the old GET-then-SET was racy). Raise 423 if another user holds it;
+    refresh the TTL if the caller already holds it."""
+    holder = str(user_id)
+    acquired = await redis.set(lock_key(element_id), holder, nx=True, ex=ttl_seconds)
+    if acquired:
+        return
+    current = await redis.get(lock_key(element_id))
+    if current != holder:
+        raise HTTPException(status_code=423, detail="Element is locked by another user")
+    # Same user re-locking their own element — extend the lease.
+    await redis.set(lock_key(element_id), holder, ex=ttl_seconds)

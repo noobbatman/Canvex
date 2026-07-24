@@ -112,7 +112,9 @@ def email_is_institutional(email: str, allowed_domains: list[str] | None = None)
     if not domain or "." not in domain:
         return False
     labels = domain.split(".")
-    if "edu" in labels or "ac" in labels:
+    # "edu"/"ac" must be the TLD (mit.edu) or the second level (nsu.edu.bd,
+    # du.ac.bd) — NOT just any label, or "user@edu.attacker.com" would pass.
+    if labels[-1] in {"edu", "ac"} or (len(labels) >= 2 and labels[-2] in {"edu", "ac"}):
         return True
     domains = allowed_domains if allowed_domains is not None else settings.institutional_email_domains
     for entry in domains:

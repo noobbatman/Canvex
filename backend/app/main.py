@@ -40,12 +40,19 @@ def assert_production_config() -> None:
     if settings.environment != "production":
         return
     problems = []
-    if settings.jwt_secret_key == "change-me-in-development":
-        problems.append("JWT_SECRET_KEY still has its development default")
+    # len < 32 catches the dev default, a blank value, and any weak short secret.
+    if len(settings.jwt_secret_key) < 32:
+        problems.append("JWT_SECRET_KEY must be a strong secret of at least 32 characters")
     if "*" in settings.cors_allow_origins:
         problems.append('CORS_ALLOW_ORIGINS must not contain "*" in production')
     if problems:
         raise RuntimeError("Refusing to start in production: " + "; ".join(problems))
+    if settings.api_base_url.startswith(("http://localhost", "http://127.")):
+        # Not fatal (don't block a deploy), but upload/invite links will be broken.
+        logger.warning(
+            "API_BASE_URL is still %s in production — upload and invite links will be wrong",
+            settings.api_base_url,
+        )
 
 
 assert_production_config()

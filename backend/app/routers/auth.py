@@ -205,7 +205,9 @@ async def login(
 ) -> TokenResponse:
     email = form.username.strip().lower()
     user = await db.scalar(select(User).where(User.email == email))
-    stored_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
+    # Google-only accounts have password_hash = NULL; fall back to the dummy hash
+    # so verification returns a clean 401 instead of crashing inside passlib.
+    stored_hash = user.password_hash if user is not None and user.password_hash else DUMMY_PASSWORD_HASH
     password_is_valid = await anyio.to_thread.run_sync(verify_password, form.password, stored_hash)
     if user is None or not password_is_valid:
         raise HTTPException(
@@ -222,7 +224,11 @@ async def login(
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(payload: RefreshTokenRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     token_hash = hash_refresh_token(payload.refresh_token)
-    token_row = await db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    # Lock the row so two concurrent refreshes serialise: the second waits, then
+    # sees revoked=True and trips reuse detection instead of both rotating.
+    token_row = await db.scalar(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash).with_for_update()
+    )
 
     if token_row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")

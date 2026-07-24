@@ -34,7 +34,7 @@ from app.services.elements import (
     get_page_or_404,
     update_element_state,
 )
-from app.services.redis import assert_no_foreign_lock, get_redis, lock_key
+from app.services.redis import acquire_element_lock, assert_no_foreign_lock, get_redis, lock_key
 from app.services.webhooks import dispatch_webhook_event_for_page
 from app.services.ws_manager import manager
 
@@ -334,8 +334,7 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
                         element = await get_element_or_404(db, element_id)
                         if element.page_id != page_id:
                             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Element not found on this page")
-                        await assert_no_foreign_lock(redis, element_id, user.id)
-                        await redis.set(lock_key(element_id), str(user.id), ex=LOCK_TTL_SECONDS)
+                        await acquire_element_lock(redis, element_id, user.id, LOCK_TTL_SECONDS)
                         manager.remember_lock(websocket, element_id)
                     lock_payload = {"element_id": str(element_id), "locked_by": str(user.id), "ttl_s": LOCK_TTL_SECONDS}
                     # The Redis lock is already set: a replay-logging failure must not

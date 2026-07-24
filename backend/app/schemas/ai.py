@@ -54,10 +54,15 @@ class AISearchResult(BaseModel):
     similarity: float
 
 
+# ~8M chars of base64 ≈ 6MB image — generous for a page snapshot, but caps a
+# resource-exhaustion attack that streams an enormous payload to be decoded+written.
+MAX_SNAPSHOT_CHARS = 8_000_000
+
+
 class AIAskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     # Optional base64 PNG of the canvas so Gemini can "see" it (vision model).
-    snapshot_b64: str | None = None
+    snapshot_b64: str | None = Field(default=None, max_length=MAX_SNAPSHOT_CHARS)
 
     @field_validator("question")
     @classmethod
@@ -77,7 +82,7 @@ class AIAskResponse(BaseModel):
 
 class AISolveRequest(BaseModel):
     # Base64 PNG of the page for the vision model to scan.
-    snapshot_b64: str | None = None
+    snapshot_b64: str | None = Field(default=None, max_length=MAX_SNAPSHOT_CHARS)
 
 
 class AISolveItem(BaseModel):

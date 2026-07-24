@@ -80,7 +80,9 @@ MAX_ELEMENT_PAYLOAD_BYTES = 100 * 1024
 
 
 def _assert_payload_size(*parts: JsonObject | None) -> None:
-    total = sum(len(json.dumps(part, default=str)) for part in parts if part is not None)
+    total = sum(
+        len(json.dumps(part, default=str).encode("utf-8")) for part in parts if part is not None
+    )
     if total > MAX_ELEMENT_PAYLOAD_BYTES:
         raise ValueError(
             f"Element payload is {total} bytes; the maximum is {MAX_ELEMENT_PAYLOAD_BYTES} (100KB)"

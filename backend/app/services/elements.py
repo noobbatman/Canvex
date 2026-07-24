@@ -106,6 +106,17 @@ async def update_element_state(
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No element fields to update")
 
+    # The client sends a reconstructed content object that drops backend-managed
+    # keys. Preserve them so a move/edit can't destroy branch lineage
+    # (_origin_id) or AI provenance (source / interaction_id) — otherwise diff
+    # and merge treat the element as unrelated to its parent.
+    if "content" in update_data and isinstance(element.content, dict):
+        incoming = dict(update_data["content"] or {})
+        for key in ("_origin_id", "source", "interaction_id"):
+            if key in element.content and key not in incoming:
+                incoming[key] = element.content[key]
+        update_data["content"] = incoming
+
     await assert_can_mutate_element(db, element, role)
     before_state = element_state(element)
     for field, value in update_data.items():

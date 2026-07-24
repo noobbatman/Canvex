@@ -68,10 +68,12 @@ const describeAuthError = (err: unknown, fallback: string): string => {
 const emailIsInstitutional = (email: string, domains: string[]): boolean => {
   const domain = (email.split('@')[1] ?? '').trim().toLowerCase()
   if (!domain || !domain.includes('.')) return false
-  // Any academic domain always passes: a label of "edu" or "ac" covers .edu,
-  // .edu.bd, .ac, .ac.uk, .ac.bd, university.ac.jp … (matches the backend).
+  // "edu"/"ac" must be the TLD (.edu) or second level (.edu.bd, .ac.uk) — not
+  // just any label, or "edu.attacker.com" would pass. Matches the backend.
   const labels = domain.split('.')
-  if (labels.includes('edu') || labels.includes('ac')) return true
+  const tld = labels[labels.length - 1]
+  const sld = labels[labels.length - 2]
+  if (tld === 'edu' || tld === 'ac' || sld === 'edu' || sld === 'ac') return true
   // Configured extras only *add* non-academic institutional domains.
   return domains.some((raw) => {
     const d = raw.trim().toLowerCase().replace(/^\.+/, '')

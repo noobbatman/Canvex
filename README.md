@@ -271,3 +271,15 @@ Replaces the type-a-question dialog above with a single-action model.
 - Pressing it scans the **whole page**: the frontend snapshots the current view and calls the new `POST /pages/{page_id}/solve`, which sends the image to the Gemini vision model and returns an answer for **every** problem/question/equation it finds — each with a normalised `x`/`y` position in the image.
 - The frontend drops each answer as an **editable text element next to its problem** (using the returned position; falls back to a neat stack when no position is given). Answers are normal elements — drag, resize, delete, sync, undo.
 - Synchronous (no AI worker). Needs `GEMINI_API_KEY` + a vision `GEMINI_VISION_MODEL` (e.g. `gemini-3.5-flash`); without them the button reports that a vision model is required. Robust JSON parsing tolerates code fences and 0–1 / 0–100 / 0–1000 coordinate scales.
+
+## Audit Fixes (2026-07-22)
+
+A code review flagged correctness and security issues; the contained ones are fixed (larger architectural items — multi-instance realtime, object storage for uploads, SSRF-safe webhooks, webhook durability, cookie-based auth, pinned deps, CI test suites — are tracked separately):
+
+- **Google-only login no longer 500s.** Password login against an OAuth account (NULL `password_hash`) now falls back to the dummy hash and returns a clean 401 instead of crashing inside passlib.
+- **Branch lineage survives edits.** Element updates preserve backend-managed content keys (`_origin_id`, `source`, `interaction_id`) even when the client omits them, so moving/editing a branched element no longer breaks diff/merge.
+- **Institutional-email check tightened.** `edu`/`ac` must be the TLD or second level (`mit.edu`, `nsu.edu.bd`, `du.ac.bd`); `edu.attacker.com` is now rejected (backend + frontend).
+- **Atomic element locks.** Lock acquisition uses Redis `SET NX`, so two users can't both win the same lock (was a racy GET-then-SET).
+- **Refresh-token rotation locked.** The refresh row is read `FOR UPDATE`, so concurrent refreshes serialise instead of both rotating.
+- **Resource-exhaustion caps.** AI snapshot payloads are size-capped; the 100KB element-payload limit now counts UTF-8 bytes, not Unicode characters.
+- **Stricter production guard.** Startup rejects a JWT secret under 32 chars (blank/weak/default) and warns when `API_BASE_URL` is still localhost in production.
