@@ -470,7 +470,83 @@
   }
 
   .workspace-ai-panel {
-    @apply absolute bottom-6 right-6 z-[80] w-80 rounded-2xl border border-dashed border-indigo-300 bg-white/90 p-4 shadow-lg backdrop-blur-md;
+    @apply absolute bottom-6 right-6 z-[80] flex max-h-[calc(100vh-8rem)] w-80 flex-col overflow-hidden rounded-2xl border border-dashed border-indigo-300 bg-white/90 p-4 shadow-lg backdrop-blur-md;
+  }
+
+  .workspace-ai-fab {
+    @apply absolute bottom-6 right-6 z-[80] inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:bg-indigo-700 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-70;
+  }
+
+  .workspace-action-rail {
+    @apply absolute right-4 top-[4.75rem] z-40 flex flex-col items-center gap-1 rounded-full border border-slate-200/90 bg-white/75 px-1.5 py-2 text-slate-600 shadow-sm backdrop-blur-md;
+  }
+
+  .workspace-rail-button {
+    @apply flex h-8 w-8 items-center justify-center rounded-full text-slate-500 hover:bg-[#dde9ff] hover:text-indigo-700;
+  }
+
+  .workspace-rail-button.danger {
+    @apply hover:bg-rose-50 hover:text-rose-600;
+  }
+
+  .workspace-rail-divider {
+    @apply my-1 h-px w-5 bg-slate-200;
+  }
+
+  .workspace-panel {
+    @apply absolute bottom-0 right-0 top-0 z-[85] flex w-[26rem] max-w-full flex-col border-l border-slate-200/90 bg-[#f8f7f1]/95 shadow-2xl backdrop-blur-md;
+    animation: panel-slide-in 0.22s ease-out;
+  }
+
+  .workspace-tool-popover {
+    /* Transient: it opens on tool select and auto-closes when the cursor
+       leaves it (onMouseLeave) or you start using the canvas, so it never
+       lingers over the drawing area. */
+    @apply absolute left-1/2 top-[7.5rem] z-[60] w-72 -translate-x-1/2 rounded-2xl border border-slate-200/90 bg-white/90 p-4 shadow-lg backdrop-blur-md;
+    animation: modal-pop-in 0.15s ease-out;
+  }
+
+  .workspace-popover-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400;
+  }
+
+  .workspace-eraser-mode {
+    @apply flex flex-col items-center gap-0.5 rounded-xl border border-slate-200 bg-white/60 px-3 py-2 text-slate-600 hover:border-indigo-300;
+  }
+
+  .workspace-eraser-mode.active {
+    @apply border-indigo-400 bg-indigo-50/70 text-indigo-700 ring-1 ring-indigo-200;
+  }
+
+  .workspace-modal-backdrop {
+    @apply fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/30 p-6 backdrop-blur-sm;
+  }
+
+  .workspace-modal {
+    @apply flex max-h-[85vh] w-full flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-[#f8f7f1] shadow-2xl;
+    animation: modal-pop-in 0.18s ease-out;
+  }
+}
+
+@keyframes panel-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes modal-pop-in {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
   }
 }
 

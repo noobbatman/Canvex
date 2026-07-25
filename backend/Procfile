@@ -1,0 +1,3 @@
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+ai_worker: arq app.workers.ai_worker.WorkerSettings
+webhook_worker: arq app.workers.webhook_worker.WorkerSettings

@@ -4,10 +4,11 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rate_limit import limiter, user_or_ip
 from app.db.session import get_db
 from app.middleware.auth import get_current_user
 from app.models.ai import AIFeedback, AIInteraction
@@ -16,9 +17,19 @@ from app.models.element import WhiteboardElement
 from app.models.enums import AITriggerType, MemberRole
 from app.models.page import WhiteboardPage
 from app.models.user import User
-from app.schemas.ai import AIFeedbackCreate, AIFeedbackRead, AIInteractionRead, AISearchResult
+from app.schemas.ai import (
+    AIAskRequest,
+    AIAskResponse,
+    AIFeedbackCreate,
+    AIFeedbackRead,
+    AIInteractionRead,
+    AISearchResult,
+    AISolveItem,
+    AISolveRequest,
+    AISolveResponse,
+)
 from app.schemas.whiteboard import ElementRead
-from app.services.ai import embed_text
+from app.services.ai import answer_question_now, embed_text, solve_page_now
 from app.services.elements import assert_minimum_role, get_channel_membership_for_user, get_page_or_404
 
 router = APIRouter(tags=["ai"])
@@ -111,8 +122,58 @@ async def submit_ai_feedback(
     )
 
 
+@router.post("/pages/{page_id}/ask", response_model=AIAskResponse)
+@limiter.limit("20/minute", key_func=user_or_ip)  # plan 12.2: Gemini cost abuse
+async def ask_canvex(
+    request: Request,
+    page_id: UUID,
+    payload: AIAskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AIAskResponse:
+    """Answer a question synchronously and return it in the HTTP response, so the
+    asker sees it instantly with no AI worker running. The reply is not placed on
+    the canvas — the frontend shows it and lets the user choose to add it."""
+    page = await assert_page_access(db, page_id, current_user.id, MemberRole.EDITOR)
+    interaction, source, answer = await answer_question_now(
+        db,
+        page=page,
+        question=payload.question,
+        snapshot_b64=payload.snapshot_b64,
+    )
+    return AIAskResponse(
+        answer=answer,
+        source=source,
+        interaction=interaction_read(interaction),
+        latency_ms=interaction.latency_ms or 0,
+    )
+
+
+@router.post("/pages/{page_id}/solve", response_model=AISolveResponse)
+@limiter.limit("15/minute", key_func=user_or_ip)  # plan 12.2: Gemini cost abuse
+async def solve_page(
+    request: Request,
+    page_id: UUID,
+    payload: AISolveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AISolveResponse:
+    """Scan the whole page image and return an answer for every problem that
+    needs one, each with a normalised position so the frontend can drop the
+    answer next to it. Runs synchronously; no AI worker needed."""
+    page = await assert_page_access(db, page_id, current_user.id, MemberRole.EDITOR)
+    source, items, latency_ms = await solve_page_now(db, page=page, snapshot_b64=payload.snapshot_b64)
+    return AISolveResponse(
+        source=source,
+        answers=[AISolveItem(**item) for item in items],
+        latency_ms=latency_ms,
+    )
+
+
 @router.get("/search", response_model=list[AISearchResult])
+@limiter.limit("20/minute", key_func=user_or_ip)  # plan 12.2: Gemini cost abuse
 async def semantic_search(
+    request: Request,
     q: str = Query(min_length=1, max_length=500),
     channel_id: UUID | None = None,
     limit: int = Query(default=10, ge=1, le=50),

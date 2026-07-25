@@ -192,8 +192,10 @@ async def replay_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
-    if speed not in {1, 2, 4}:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="speed must be one of 1, 2, or 4")
+    # speed=0 means "no server pacing": dump every event immediately so the
+    # client can drive its own playback clock (pause/resume/scrub).
+    if speed not in {0, 1, 2, 4}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="speed must be one of 0, 1, 2, or 4")
 
     session = await db.get(Session, session_id)
     if session is None:
@@ -209,7 +211,7 @@ async def replay_session(
                 .order_by(SessionEvent.id.asc())
             )
             async for event in events:
-                if previous_event is not None:
+                if previous_event is not None and speed > 0:
                     delay_s = (event.occurred_at - previous_event.occurred_at).total_seconds() / speed
                     if delay_s > 0:
                         await asyncio.sleep(min(delay_s, 2.0))

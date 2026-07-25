@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.security import decode_share_token
 from app.db.session import AsyncSessionLocal
 from app.db.session import get_db
 from app.middleware.auth import get_current_user
@@ -22,6 +23,7 @@ from app.models.enums import MemberRole
 from app.models.user import User
 from app.schemas.whiteboard import ElementCreate, ElementRead, ElementUpdate
 from app.services.ai import detect_ai_trigger, enqueue_ai_analysis, enqueue_text_embedding, page_ai_channel
+from app.services.analytics import record_canvas_time
 from app.services.audit import end_active_session, get_or_create_active_session, record_session_event
 from app.services.elements import (
     assert_minimum_role,
@@ -32,17 +34,20 @@ from app.services.elements import (
     get_page_or_404,
     update_element_state,
 )
-from app.services.redis import get_redis
+from app.services.redis import acquire_element_lock, assert_no_foreign_lock, get_redis, lock_key
+from app.services.webhooks import dispatch_webhook_event_for_page
 from app.services.ws_manager import manager
 
 router = APIRouter(tags=["websocket"])
 
 LOCK_TTL_SECONDS = 10
 CURSOR_TTL_SECONDS = 5
-
-
-def lock_key(element_id: UUID) -> str:
-    return f"lock:{element_id}"
+# Plan 12.2 flood limits. Mutating/lock messages get the plan's 100/minute;
+# cursor:move must be exempt from that budget — the client legitimately sends
+# up to ~33/s (30ms throttle, plan 5.5) — so it gets its own ceiling just
+# above the maximum a well-behaved client can produce.
+WS_MESSAGES_PER_MINUTE = 100
+WS_CURSOR_MESSAGES_PER_MINUTE = 2400
 
 
 def cursor_key(page_id: UUID) -> str:
@@ -75,12 +80,6 @@ async def get_page_membership(db: AsyncSession, page_id: UUID, user_id: UUID) ->
     return await get_channel_membership_for_user(db, page.channel_id, user_id)
 
 
-async def assert_no_foreign_lock(redis: Redis, element_id: UUID, user_id: UUID) -> None:
-    locked_by = await redis.get(lock_key(element_id))
-    if locked_by is not None and locked_by != str(user_id):
-        raise HTTPException(status_code=423, detail="Element is locked by another user")
-
-
 def element_payload(element: object) -> dict[str, Any]:
     return ElementRead.model_validate(element).model_dump(mode="json")
 
@@ -109,7 +108,10 @@ async def apply_element_operation(
         element = await create_element_for_page(db, page_id=page_id, payload=create_payload, actor_id=user_id)
         await db.commit()
         await db.refresh(element)
-        return "create", element_payload(element)
+        payload = element_payload(element)
+        with suppress(Exception):
+            await dispatch_webhook_event_for_page(db, page_id=page_id, event_type="element:create", payload=payload)
+        return "create", payload
 
     element_id = UUID(str(operation_payload.get("element_id") or operation_payload.get("id")))
     element = await get_element_or_404(db, element_id)
@@ -138,19 +140,22 @@ async def apply_element_operation(
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported element operation")
 
 
-async def send_error(websocket: WebSocket, exc: Exception) -> None:
+async def send_error(websocket: WebSocket, exc: Exception, *, client_operation_id: str | None = None) -> None:
+    body: dict[str, Any] = {"type": "element:error"}
+    if client_operation_id is not None:
+        body["client_operation_id"] = client_operation_id
     if isinstance(exc, HTTPException):
-        await websocket.send_json({"type": "element:error", "status": exc.status_code, "detail": exc.detail})
-        return
-    if isinstance(exc, (ValidationError, ValueError)):
-        await websocket.send_json({"type": "element:error", "status": 422, "detail": str(exc)})
-        return
-    await websocket.send_json({"type": "element:error", "status": 500, "detail": "Element operation failed"})
+        body.update(status=exc.status_code, detail=exc.detail)
+    elif isinstance(exc, (ValidationError, ValueError)):
+        body.update(status=422, detail=str(exc))
+    else:
+        body.update(status=500, detail="Element operation failed")
+    await websocket.send_json(body)
 
 
-async def try_send_error(websocket: WebSocket, exc: Exception) -> None:
+async def try_send_error(websocket: WebSocket, exc: Exception, *, client_operation_id: str | None = None) -> None:
     try:
-        await send_error(websocket, exc)
+        await send_error(websocket, exc, client_operation_id=client_operation_id)
     except RuntimeError:
         pass
 
@@ -199,34 +204,100 @@ async def forward_ai_events(websocket: WebSocket, page_id: UUID) -> None:
 async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
     redis = get_redis()
     token = websocket.query_params.get("token")
-    async with AsyncSessionLocal() as db:
+    share_token = websocket.query_params.get("share_token")
+
+    user: User | None = None
+    read_only = False
+
+    if share_token is not None:
         try:
-            user = await authenticate_websocket_user(db, token)
-            membership = await get_page_membership(db, page_id, user.id)
-            assert_minimum_role(membership, MemberRole.VIEWER)
-        except HTTPException:
+            shared_page_id = decode_share_token(share_token)
+            if shared_page_id != page_id:
+                raise ValueError("share token is for a different page")
+            async with AsyncSessionLocal() as db:
+                await get_page_or_404(db, page_id)
+        except Exception:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+        read_only = True
+    else:
+        async with AsyncSessionLocal() as db:
+            try:
+                user = await authenticate_websocket_user(db, token)
+                membership = await get_page_membership(db, page_id, user.id)
+                assert_minimum_role(membership, MemberRole.VIEWER)
+            except HTTPException:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
 
-    async with AsyncSessionLocal() as db:
-        session = await get_or_create_active_session(db, page_id)
-        await db.commit()
-        session_id = session.id
+    if read_only:
+        session_id = None
+    else:
+        async with AsyncSessionLocal() as db:
+            session = await get_or_create_active_session(db, page_id)
+            await db.commit()
+            session_id = session.id
 
-    await manager.connect(websocket, page_id, user.id)
+    await manager.connect(websocket, page_id, user.id if user is not None else None, read_only=read_only)
+    connected_at = datetime.now(UTC)
     ai_forward_task = asyncio.create_task(forward_ai_events(websocket, page_id))
-    await manager.broadcast(
-        page_id,
-        {"type": "presence:join", "payload": {"user_id": str(user.id), "display_name": user.display_name}},
-        exclude=websocket,
-    )
+    if user is not None:
+        await manager.broadcast(
+            page_id,
+            {"type": "presence:join", "payload": {"user_id": str(user.id), "display_name": user.display_name}},
+            exclude=websocket,
+        )
+
+    # Per-connection flood windows (plan 12.2).
+    ws_window_start = datetime.now(UTC)
+    ws_op_count = 0
+    ws_cursor_count = 0
 
     try:
         while True:
             message = await websocket.receive_json()
+
+            now = datetime.now(UTC)
+            if (now - ws_window_start).total_seconds() >= 60:
+                ws_window_start = now
+                ws_op_count = 0
+                ws_cursor_count = 0
+            is_cursor = message.get("type") == "cursor:move"
+            if is_cursor:
+                ws_cursor_count += 1
+                if ws_cursor_count > WS_CURSOR_MESSAGES_PER_MINUTE:
+                    continue  # drop silently; cursors are ephemeral
+            else:
+                ws_op_count += 1
+                if ws_op_count > WS_MESSAGES_PER_MINUTE:
+                    if ws_op_count == WS_MESSAGES_PER_MINUTE + 1:
+                        # Tell the client once per window; drop silently after.
+                        await websocket.send_json(
+                            {
+                                "type": "element:error",
+                                "status": 429,
+                                "detail": "Too many messages — slow down (100/minute limit).",
+                            }
+                        )
+                    continue
+
             protocol = message.get("protocol", "canvas")
             if protocol != "canvas":
                 await websocket.send_json({"type": "error", "status": 400, "detail": "Unsupported websocket protocol"})
+                continue
+
+            if read_only:
+                # Share-link viewers are receive-only: they get every
+                # broadcast (element:op, ai:response, cursor:move, ...) but
+                # can never send a mutating message themselves, regardless of
+                # what the frontend does or doesn't show them.
+                await websocket.send_json(
+                    {
+                        "type": "element:error",
+                        "status": status.HTTP_403_FORBIDDEN,
+                        "detail": "This is a read-only share link.",
+                    }
+                )
                 continue
             message_type = message.get("type")
             payload = dict(message.get("payload") or {})
@@ -242,6 +313,16 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
                 }
                 await redis.hset(cursor_key(page_id), str(user.id), json.dumps(cursor_payload))
                 await redis.expire(cursor_key(page_id), CURSOR_TTL_SECONDS)
+                # Replay bookkeeping (plan 7.5: cursor moves are part of the
+                # session recording). Best-effort, like lock/op recording.
+                with suppress(Exception):
+                    await record_ws_event(
+                        session_id=session_id,
+                        page_id=page_id,
+                        event_type="cursor:move",
+                        payload=cursor_payload,
+                        actor_id=user.id,
+                    )
                 await manager.broadcast(page_id, {"type": "cursor:move", "payload": cursor_payload}, exclude=websocket)
 
             elif message_type == "element:lock":
@@ -253,16 +334,19 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
                         element = await get_element_or_404(db, element_id)
                         if element.page_id != page_id:
                             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Element not found on this page")
-                        await redis.set(lock_key(element_id), str(user.id), ex=LOCK_TTL_SECONDS)
+                        await acquire_element_lock(redis, element_id, user.id, LOCK_TTL_SECONDS)
                         manager.remember_lock(websocket, element_id)
                     lock_payload = {"element_id": str(element_id), "locked_by": str(user.id), "ttl_s": LOCK_TTL_SECONDS}
-                    await record_ws_event(
-                        session_id=session_id,
-                        page_id=page_id,
-                        event_type="element:lock",
-                        payload=lock_payload,
-                        actor_id=user.id,
-                    )
+                    # The Redis lock is already set: a replay-logging failure must not
+                    # block the ack/broadcast for a lock that already took effect.
+                    with suppress(Exception):
+                        await record_ws_event(
+                            session_id=session_id,
+                            page_id=page_id,
+                            event_type="element:lock",
+                            payload=lock_payload,
+                            actor_id=user.id,
+                        )
                     await websocket.send_json({"type": "element:lock:ack", "payload": lock_payload})
                     await manager.broadcast(page_id, {"type": "element:lock", "payload": lock_payload}, exclude=websocket)
                 except Exception as exc:
@@ -282,13 +366,17 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
                     ack = {"type": "element:ack", "operation": operation, "payload": element_data}
                     if payload.get("client_operation_id") is not None:
                         ack["client_operation_id"] = payload["client_operation_id"]
-                    await record_ws_event(
-                        session_id=session_id,
-                        page_id=page_id,
-                        event_type="element:op",
-                        payload={"operation": operation, "payload": element_data},
-                        actor_id=user.id,
-                    )
+                    # Session-event recording is best-effort replay bookkeeping: the
+                    # element mutation above already committed, so a failure here must
+                    # not prevent the ack/broadcast for a change that already happened.
+                    with suppress(Exception):
+                        await record_ws_event(
+                            session_id=session_id,
+                            page_id=page_id,
+                            event_type="element:op",
+                            payload={"operation": operation, "payload": element_data},
+                            actor_id=user.id,
+                        )
                     if operation in {"create", "update"}:
                         if element_data.get("type") in {"text", "math", "sticky"}:
                             with suppress(Exception):
@@ -315,7 +403,12 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
                     await websocket.send_json(ack)
                     await manager.broadcast(page_id, event, exclude=websocket)
                 except Exception as exc:
-                    await try_send_error(websocket, exc)
+                    client_operation_id = payload.get("client_operation_id")
+                    await try_send_error(
+                        websocket,
+                        exc,
+                        client_operation_id=client_operation_id if isinstance(client_operation_id, str) else None,
+                    )
 
             else:
                 await websocket.send_json({"type": "error", "status": 400, "detail": "Unsupported message type"})
@@ -327,28 +420,51 @@ async def canvas_ws(websocket: WebSocket, page_id: UUID) -> None:
         with suppress(asyncio.CancelledError):
             await ai_forward_task
         released_locks = manager.disconnect(websocket, page_id)
-        await redis.hdel(cursor_key(page_id), str(user.id))
-        for element_id in released_locks:
-            if await redis.get(lock_key(element_id)) == str(user.id):
-                await redis.delete(lock_key(element_id))
-                unlock_payload = {"element_id": str(element_id), "unlocked_by": str(user.id)}
-                await record_ws_event(
-                    session_id=session_id,
-                    page_id=page_id,
-                    event_type="element:unlock",
-                    payload=unlock_payload,
-                    actor_id=user.id,
-                )
-                await manager.broadcast(
-                    page_id,
-                    {"type": "element:unlock", "payload": unlock_payload},
-                    exclude=websocket,
-                )
-        await manager.broadcast(page_id, {"type": "presence:leave", "payload": {"user_id": str(user.id)}}, exclude=websocket)
-        if page_id not in manager.rooms:
+        if user is not None:
+            await redis.hdel(cursor_key(page_id), str(user.id))
+            duration_seconds = int((datetime.now(UTC) - connected_at).total_seconds())
+            if duration_seconds > 0:
+                with suppress(Exception):
+                    async with AsyncSessionLocal() as db:
+                        await record_canvas_time(db, page_id=page_id, user_id=user.id, seconds=duration_seconds)
+                        await db.commit()
+            for element_id in released_locks:
+                if await redis.get(lock_key(element_id)) == str(user.id):
+                    await redis.delete(lock_key(element_id))
+                    unlock_payload = {"element_id": str(element_id), "unlocked_by": str(user.id)}
+                    # A logging failure here must not abort the rest of disconnect
+                    # cleanup (other locks, presence broadcast, session end).
+                    with suppress(Exception):
+                        await record_ws_event(
+                            session_id=session_id,
+                            page_id=page_id,
+                            event_type="element:unlock",
+                            payload=unlock_payload,
+                            actor_id=user.id,
+                        )
+                    await manager.broadcast(
+                        page_id,
+                        {"type": "element:unlock", "payload": unlock_payload},
+                        exclude=websocket,
+                    )
+            await manager.broadcast(page_id, {"type": "presence:leave", "payload": {"user_id": str(user.id)}}, exclude=websocket)
+        if not manager.has_active_editors(page_id):
             async with AsyncSessionLocal() as db:
-                await end_active_session(db, page_id)
+                ended_session = await end_active_session(db, page_id)
                 await db.commit()
+                if ended_session is not None:
+                    with suppress(Exception):
+                        await dispatch_webhook_event_for_page(
+                            db,
+                            page_id=page_id,
+                            event_type="session:end",
+                            payload={
+                                "session_id": str(ended_session.id),
+                                "page_id": str(page_id),
+                                "started_at": ended_session.started_at.isoformat(),
+                                "ended_at": ended_session.ended_at.isoformat(),
+                            },
+                        )
 
 
 @router.get("/pages/{page_id}/presence")
@@ -356,8 +472,10 @@ async def get_presence(
     page_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, int]:
+) -> dict[str, object]:
     membership = await get_page_membership(db, page_id, current_user.id)
     assert_minimum_role(membership, MemberRole.VIEWER)
-    count = await get_redis().hlen(cursor_key(page_id))
-    return {"count": count}
+    # Live WebSocket connections, not the cursor hash: the cursor hash has a
+    # 5s TTL so "online" would evaporate the moment someone stops moving.
+    user_ids = sorted(str(user_id) for user_id in manager.users_in_page(page_id))
+    return {"count": len(user_ids), "user_ids": user_ids}

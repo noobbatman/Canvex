@@ -1,0 +1,111 @@
+# Render Blueprint for Canvex (backend + workers + Postgres + Redis).
+# In Render: New → Blueprint → connect this repo. Then set the `sync: false`
+# secrets (GEMINI_API_KEY, API_BASE_URL, CORS_ALLOW_ORIGINS) in the dashboard.
+# pgvector is available on all current Render Postgres plans, including free.
+#
+# NOTE: the free database is deleted ~30 days after creation — fine for a demo
+# or viva. For a persistent instance, bump `plan` to `basic_256mb` (or higher);
+# valid names: free, basic_256mb, basic_1gb, basic_4gb, pro_4gb, …
+
+databases:
+  - name: canvex-postgres
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  # ── Redis (Render "Key Value") ────────────────────────────────
+  - type: keyvalue
+    name: canvex-redis
+    plan: free
+    ipAllowList: [] # internal-only; no public access
+
+  # ── FastAPI web service ───────────────────────────────────────
+  - type: web
+    name: canvex-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health/ready
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: RUN_MIGRATIONS_ON_STARTUP
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: canvex-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: canvex-redis
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true # Render generates a strong secret
+      - key: GEMINI_API_KEY
+        sync: false # set in dashboard (blank → local AI fallback)
+      - key: API_BASE_URL
+        sync: false # set to this service's public URL after first deploy
+      - key: CORS_ALLOW_ORIGINS
+        sync: false # set to your Vercel domain(s), comma-separated
+      - key: GOOGLE_CLIENT_ID
+        sync: false # Google OAuth web client ID (blank → Google button hidden)
+      - key: INSTITUTIONAL_EMAIL_DOMAINS
+        sync: false # extra domains beyond built-in .edu/.ac (blank → just .edu/.ac)
+
+  # ── ARQ AI worker ─────────────────────────────────────────────
+  - type: worker
+    name: canvex-ai-worker
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: arq app.workers.ai_worker.WorkerSettings
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: RUN_MIGRATIONS_ON_STARTUP
+        value: "false" # the web service owns migrations
+      - key: DATABASE_URL
+        fromDatabase:
+          name: canvex-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: canvex-redis
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        fromService:
+          type: web
+          name: canvex-api
+          envVarKey: JWT_SECRET_KEY
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+
+  # ── ARQ webhook delivery worker ───────────────────────────────
+  - type: worker
+    name: canvex-webhook-worker
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: arq app.workers.webhook_worker.WorkerSettings
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: RUN_MIGRATIONS_ON_STARTUP
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: canvex-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: canvex-redis
+          property: connectionString

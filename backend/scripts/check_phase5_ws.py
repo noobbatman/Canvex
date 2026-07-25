@@ -105,8 +105,9 @@ def main() -> None:
 
                 response = client.get(f"/pages/{page_id}/presence", headers=auth(owner["access"]))
                 require_status("presence count", response.status_code, 200, response.text)
-                if response.json()["count"] != 1:
-                    raise AssertionError("presence count should reflect active cursor state")
+                # Two authenticated WebSockets (owner + editor) are connected here.
+                if response.json()["count"] != 2:
+                    raise AssertionError("presence count should be 2 with both users connected")
 
                 owner_ws.send_json(
                     {

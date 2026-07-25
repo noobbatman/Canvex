@@ -85,7 +85,121 @@ export type AuthSession = {
   user: User
 }
 
+export type AuthConfig = {
+  google_enabled: boolean
+  google_client_id: string
+  institutional_domains: string[]
+}
+
+export type EventOperation = 'create' | 'update' | 'delete' | 'lock' | 'unlock' | 'restore'
+
+export type ElementEvent = {
+  id: string
+  element_id: string
+  page_id: string
+  actor_id?: string | null
+  actor_display_name?: string | null
+  operation: EventOperation
+  before_state?: Record<string, unknown> | null
+  after_state?: Record<string, unknown> | null
+  vector_clock: Record<string, number>
+  occurred_at: string
+}
+
+export type AuditPageResult = {
+  items: ElementEvent[]
+  limit: number
+  offset: number
+  total: number
+}
+
+export type SessionSummary = {
+  id: string
+  page_id: string
+  started_at: string
+  ended_at?: string | null
+}
+
+export type ReplayEvent = {
+  id: number
+  event_type: string
+  payload: Record<string, unknown>
+  actor_id?: string | null
+  occurred_at: string
+}
+
+export type BranchDiff = {
+  added: Element[]
+  modified: Array<{ parent: Element; branch: Element }>
+  deleted: Element[]
+}
+
+export type MergeStrategy = 'ours' | 'theirs'
+
+export type MergeSummary = {
+  strategy: MergeStrategy
+  added_count: number
+  modified_count: number
+  deleted_count: number
+}
+
+export type Invite = {
+  id: string
+  channel_id: string
+  code: string
+  invite_url: string
+  role_on_join: MemberRole
+  max_uses?: number | null
+  uses_count: number
+  expires_at?: string | null
+  created_at: string
+}
+
 export type AITriggerType = 'math' | 'image' | 'question' | 'text_block' | 'closed_shape' | 'explicit'
+
+export type HeatmapCell = {
+  region_x_bucket: number
+  region_y_bucket: number
+  total_edits: number
+  unique_users: number
+}
+
+export type ParticipationEntry = {
+  user_id: string
+  display_name: string
+  total_elements: number
+  active_seconds: number
+}
+
+export type AITriggerUsage = {
+  trigger_type: AITriggerType
+  count: number
+  avg_latency_ms?: number | null
+}
+
+export type PageAnalytics = {
+  heatmap: HeatmapCell[]
+  participation: ParticipationEntry[]
+  most_active_day?: string | null
+  ai_usage: {
+    by_trigger_type: AITriggerUsage[]
+    total_interactions: number
+    incorrect_feedback_percentage?: number | null
+  }
+}
+
+export type AISolveItem = {
+  problem: string
+  answer: string
+  x?: number | null
+  y?: number | null
+}
+
+export type AISolveResponse = {
+  source: 'gemini' | 'local' | 'local-fallback'
+  answers: AISolveItem[]
+  latency_ms: number
+}
 
 export type AIInteraction = {
   id: string

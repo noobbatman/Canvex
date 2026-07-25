@@ -27,3 +27,5 @@ Thumbs.db
 *.log
 coverage/
 htmlcov/
+backend/uploads/
+backend/storage/

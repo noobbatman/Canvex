@@ -32,6 +32,7 @@ from app.schemas.whiteboard import (
 )
 from app.services.branching import compute_branch_diff, create_page_branch, merge_branch_into_parent, strip_branch_metadata
 from app.services.ai import enqueue_text_embedding
+from app.services.element_events import element_state
 from app.services.elements import (
     assert_minimum_role,
     create_element_for_page,
@@ -41,6 +42,8 @@ from app.services.elements import (
     get_page_or_404,
     update_element_state,
 )
+from app.services.redis import assert_no_foreign_lock, get_redis
+from app.services.webhooks import dispatch_webhook_event_for_page
 
 router = APIRouter(tags=["whiteboard"])
 
@@ -200,7 +203,7 @@ async def update_page(
                 WhiteboardPage.is_deleted.is_(False),
             )
         )
-        new_index = min(payload.order_index, max_order)
+        new_index = max(0, min(payload.order_index, max_order))
         if new_index < old_index:
             await db.execute(
                 update(WhiteboardPage)
@@ -288,6 +291,10 @@ async def create_element(
     if element.type in {ElementType.TEXT, ElementType.MATH, ElementType.STICKY}:
         with suppress(Exception):
             await enqueue_text_embedding(element_id=element.id)
+    with suppress(Exception):
+        await dispatch_webhook_event_for_page(
+            db, page_id=page_id, event_type="element:create", payload=element_state(element)
+        )
     return element
 
 
@@ -299,6 +306,9 @@ async def update_element(
     db: AsyncSession = Depends(get_db),
 ) -> WhiteboardElement:
     element, _page, membership = access
+    # The REST routes are the fallback mutation path (initial load, offline
+    # sync); they must respect the same Redis element locks as the WS path.
+    await assert_no_foreign_lock(get_redis(), element.id, current_user.id)
     await update_element_state(
         db,
         element=element,
@@ -321,6 +331,7 @@ async def delete_element(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     element, _page, membership = access
+    await assert_no_foreign_lock(get_redis(), element.id, current_user.id)
     await delete_element_state(
         db,
         element=element,

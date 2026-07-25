@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import ElementType
 
@@ -74,6 +75,20 @@ class BranchCreate(BaseModel):
         return normalized
 
 
+# Plan 12.1: reject oversized JSONB payloads before they reach the database.
+MAX_ELEMENT_PAYLOAD_BYTES = 100 * 1024
+
+
+def _assert_payload_size(*parts: JsonObject | None) -> None:
+    total = sum(
+        len(json.dumps(part, default=str).encode("utf-8")) for part in parts if part is not None
+    )
+    if total > MAX_ELEMENT_PAYLOAD_BYTES:
+        raise ValueError(
+            f"Element payload is {total} bytes; the maximum is {MAX_ELEMENT_PAYLOAD_BYTES} (100KB)"
+        )
+
+
 class ElementCreate(BaseModel):
     type: ElementType
     transform: JsonObject = Field(default_factory=default_transform)
@@ -81,12 +96,22 @@ class ElementCreate(BaseModel):
     content: JsonObject = Field(default_factory=dict)
     vector_clock: dict[str, int] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def limit_payload_size(self) -> "ElementCreate":
+        _assert_payload_size(self.transform, self.style, self.content)
+        return self
+
 
 class ElementUpdate(BaseModel):
     transform: JsonObject | None = None
     style: JsonObject | None = None
     content: JsonObject | None = None
     vector_clock: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def limit_payload_size(self) -> "ElementUpdate":
+        _assert_payload_size(self.transform, self.style, self.content)
+        return self
 
 
 class ElementRead(BaseModel):

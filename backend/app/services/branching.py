@@ -260,11 +260,13 @@ async def merge_branch_into_parent(
             )
             modified_count += 1
 
+    # Deletions are unconditional: an element removed in the branch is removed
+    # from the parent regardless of merge strategy (only "modified" elements
+    # are subject to the ours/theirs choice).
     deleted_count = 0
-    if strategy == "theirs":
-        for parent_element in diff.deleted:
-            await delete_parent_element_for_merge(db, parent_element=parent_element, actor_id=actor_id)
-            deleted_count += 1
+    for parent_element in diff.deleted:
+        await delete_parent_element_for_merge(db, parent_element=parent_element, actor_id=actor_id)
+        deleted_count += 1
 
     branch.is_deleted = True
 

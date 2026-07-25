@@ -36,3 +36,13 @@ class AITriggerType(StrEnum):
     TEXT_BLOCK = "text_block"
     CLOSED_SHAPE = "closed_shape"
     EXPLICIT = "explicit"
+
+
+class WebhookEventType(StrEnum):
+    """Validated at the API layer only — `webhooks.event_types` is a plain
+    Postgres TEXT[], not a DB-level enum, so this has no matching CREATE TYPE."""
+
+    ELEMENT_CREATE = "element:create"
+    AI_RESPONSE = "ai:response"
+    SESSION_END = "session:end"
+    MEMBER_JOINED = "member:joined"

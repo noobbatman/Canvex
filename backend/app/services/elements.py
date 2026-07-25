@@ -13,6 +13,7 @@ from app.models.element import ElementPermission, WhiteboardElement
 from app.models.enums import EventOperation, MemberRole
 from app.models.page import WhiteboardPage
 from app.schemas.whiteboard import ElementCreate, ElementUpdate
+from app.services.analytics import record_canvas_analytics
 from app.services.element_events import element_state, log_element_event
 
 
@@ -89,6 +90,7 @@ async def create_element_for_page(
         after_state=element_state(element),
         vector_clock=payload.vector_clock,
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)
     return element
 
 
@@ -103,6 +105,17 @@ async def update_element_state(
     update_data = payload.model_dump(exclude={"vector_clock"}, exclude_unset=True, exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No element fields to update")
+
+    # The client sends a reconstructed content object that drops backend-managed
+    # keys. Preserve them so a move/edit can't destroy branch lineage
+    # (_origin_id) or AI provenance (source / interaction_id) — otherwise diff
+    # and merge treat the element as unrelated to its parent.
+    if "content" in update_data and isinstance(element.content, dict):
+        incoming = dict(update_data["content"] or {})
+        for key in ("_origin_id", "source", "interaction_id"):
+            if key in element.content and key not in incoming:
+                incoming[key] = element.content[key]
+        update_data["content"] = incoming
 
     await assert_can_mutate_element(db, element, role)
     before_state = element_state(element)
@@ -119,6 +132,7 @@ async def update_element_state(
         after_state=element_state(element),
         vector_clock=payload.vector_clock,
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)
     return element
 
 
@@ -142,3 +156,4 @@ async def delete_element_state(
         before_state=before_state,
         after_state=element_state(element),
     )
+    await record_canvas_analytics(db, page_id=element.page_id, user_id=actor_id, transform=element.transform)

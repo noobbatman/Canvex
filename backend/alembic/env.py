@@ -44,10 +44,14 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    # Match the app engine's SSL handling so boot-time migrations reach an
+    # external Postgres (Supabase) the same way the app does.
+    connect_args = {"ssl": settings.database_ssl} if settings.database_ssl else {}
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

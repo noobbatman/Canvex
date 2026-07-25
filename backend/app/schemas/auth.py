@@ -63,3 +63,18 @@ class RefreshTokenRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refresh_token: str = Field(min_length=32)
+
+
+class GoogleAuthRequest(BaseModel):
+    # The Google ID token (JWT) returned by Google Identity Services in the
+    # browser. Verified server-side against the configured client ID.
+    credential: str = Field(min_length=1)
+
+
+class AuthConfig(BaseModel):
+    """Public, unauthenticated sign-in configuration for the frontend to read
+    on load — decides which social buttons to show and how to validate."""
+
+    google_enabled: bool
+    google_client_id: str
+    institutional_domains: list[str]
