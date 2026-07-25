@@ -12,6 +12,15 @@ PADDING = 40
 DEFAULT_CANVAS_SIZE = (1000, 700)
 BACKGROUND_COLOR = (250, 249, 246, 255)
 
+# Bound every allocation so a malicious editor can't request an enormous canvas
+# (element content carries arbitrary numeric dimensions/coordinates).
+MAX_TILE_PX = 5000
+MAX_CANVAS_PX = 10000
+
+
+def _tile_dim(value: float) -> int:
+    return max(1, min(MAX_TILE_PX, int(value)))
+
 _FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
 
 
@@ -104,14 +113,14 @@ def _draw_element_tile(element: WhiteboardElement) -> tuple[Image.Image, float, 
     element_type = element.type.value
 
     stroke = style.get("stroke") or "#000000"
-    stroke_width = max(1, int(float(style.get("strokeWidth", 2) or 2)))
+    stroke_width = max(1, min(200, int(float(style.get("strokeWidth", 2) or 2))))
     fill = _resolved_fill(style)
     scale_x = float(transform.get("scaleX", 1) or 1)
     scale_y = float(transform.get("scaleY", 1) or 1)
 
     if element_type == "rect":
-        w = max(1, int(float(content.get("width", 140) or 140) * scale_x))
-        h = max(1, int(float(content.get("height", 90) or 90) * scale_y))
+        w = _tile_dim(float(content.get("width", 140) or 140) * scale_x)
+        h = _tile_dim(float(content.get("height", 90) or 90) * scale_y)
         margin = stroke_width
         tile = Image.new("RGBA", (w + margin * 2, h + margin * 2), (0, 0, 0, 0))
         ImageDraw.Draw(tile).rectangle(
@@ -120,8 +129,8 @@ def _draw_element_tile(element: WhiteboardElement) -> tuple[Image.Image, float, 
         return tile, -margin, -margin
 
     if element_type == "ellipse":
-        w = max(1, int(float(content.get("rx", 60) or 60) * 2 * scale_x))
-        h = max(1, int(float(content.get("ry", 40) or 40) * 2 * scale_y))
+        w = _tile_dim(float(content.get("rx", 60) or 60) * 2 * scale_x)
+        h = _tile_dim(float(content.get("ry", 40) or 40) * 2 * scale_y)
         margin = stroke_width
         tile = Image.new("RGBA", (w + margin * 2, h + margin * 2), (0, 0, 0, 0))
         ImageDraw.Draw(tile).ellipse(
@@ -132,11 +141,11 @@ def _draw_element_tile(element: WhiteboardElement) -> tuple[Image.Image, float, 
     if element_type in {"text", "math", "sticky"}:
         text = str(content.get("text") or "")
         font_size = max(8, int(float(content.get("fontSize", 20) or 20) * min(scale_x, scale_y)))
-        width = max(20, int(float(content.get("width", 240) or 240) * scale_x))
+        width = max(20, _tile_dim(float(content.get("width", 240) or 240) * scale_x))
         font = _font(font_size)
         lines = _wrap_text(text, font, width) or [""]
         line_height = int(font_size * 1.3)
-        height = max(line_height * len(lines), line_height)
+        height = max(1, min(MAX_TILE_PX, line_height * len(lines)))
         tile = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(tile)
         if element_type == "sticky":
@@ -154,8 +163,8 @@ def _draw_element_tile(element: WhiteboardElement) -> tuple[Image.Image, float, 
         ys = [p[1] for p in points]
         min_x, min_y = min(xs), min(ys)
         margin = stroke_width + 6
-        w = max(1, int(math.ceil(max(xs) - min_x)) + margin * 2)
-        h = max(1, int(math.ceil(max(ys) - min_y)) + margin * 2)
+        w = _tile_dim(math.ceil(max(xs) - min_x) + margin * 2)
+        h = _tile_dim(math.ceil(max(ys) - min_y) + margin * 2)
         tile = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(tile)
         shifted = [(px - min_x + margin, py - min_y + margin) for px, py in points]
@@ -213,8 +222,8 @@ def render_page_image(elements: list[WhiteboardElement]) -> Image.Image:
     max_x = max(p[1] + p[0].width for p in prepared)
     max_y = max(p[2] + p[0].height for p in prepared)
 
-    canvas_width = max(200, int(math.ceil(max_x - min_x)) + PADDING * 2)
-    canvas_height = max(200, int(math.ceil(max_y - min_y)) + PADDING * 2)
+    canvas_width = max(200, min(MAX_CANVAS_PX, int(math.ceil(max_x - min_x)) + PADDING * 2))
+    canvas_height = max(200, min(MAX_CANVAS_PX, int(math.ceil(max_y - min_y)) + PADDING * 2))
     offset_x = PADDING - min_x
     offset_y = PADDING - min_y
 

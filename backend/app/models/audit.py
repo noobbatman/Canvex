@@ -16,7 +16,7 @@ class ElementEvent(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     element_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    page_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("whiteboard_pages.id"), nullable=False)
+    page_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("whiteboard_pages.id", ondelete="CASCADE"), nullable=False)
     actor_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"))
     operation: Mapped[EventOperation] = mapped_column(event_operation_enum, nullable=False)
     before_state: Mapped[dict | None] = mapped_column(JSONB)
@@ -30,7 +30,7 @@ class ReviewComment(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     element_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    snapshot_event: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("element_events.id"))
+    snapshot_event: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("element_events.id", ondelete="SET NULL"))
     author_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from urllib.parse import urlparse
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.ssrf import host_is_obviously_internal
 from app.models.enums import WebhookEventType
 
 
@@ -17,6 +20,10 @@ class WebhookCreate(BaseModel):
     def require_http_url(cls, value: str) -> str:
         if not (value.startswith("http://") or value.startswith("https://")):
             raise ValueError("target_url must be an http:// or https:// URL")
+        # Fast literal rejection; delivery does the authoritative DNS-resolving check.
+        host = urlparse(value).hostname or ""
+        if host_is_obviously_internal(host):
+            raise ValueError("target_url must not point at localhost or a private address")
         return value
 
     @field_validator("event_types")

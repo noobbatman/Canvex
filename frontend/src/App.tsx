@@ -207,7 +207,10 @@ const AuthenticatedApp = () => {
   const handleLogout = async () => {
     if (!session) return
     try {
-      await logout(session.refreshToken)
+      // The refresh interceptor rotates the token in storage, so React state can
+      // hold a stale one — revoke the freshest token, not the one we rendered with.
+      const refreshToken = loadSession()?.refreshToken ?? session.refreshToken
+      await logout(refreshToken)
     } finally {
       setSession(null)
       setChannels([])

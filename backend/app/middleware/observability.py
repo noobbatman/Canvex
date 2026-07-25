@@ -25,6 +25,15 @@ _SECURITY_HEADERS = {
 _API_CSP = "default-src 'none'; frame-ancestors 'none'"
 
 
+def _redact_path(path: str) -> str:
+    """Keep bearer secrets out of access logs: the share JWT in /view/{token}
+    and the join code in /invites/{code} are credentials, not identifiers."""
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[1] in {"view", "invites"}:
+        parts[2] = "<redacted>"
+    return "/".join(parts)
+
+
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assigns a request ID, times the request, and emits one JSON access-log
     line per request. The ID is returned in X-Request-ID so users can quote it
@@ -53,7 +62,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             extra: dict[str, object] = {
                 "method": request.method,
-                "path": request.url.path,
+                "path": _redact_path(request.url.path),
                 "status": status_code,
                 "duration_ms": duration_ms,
             }

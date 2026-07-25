@@ -283,3 +283,14 @@ A code review flagged correctness and security issues; the contained ones are fi
 - **Refresh-token rotation locked.** The refresh row is read `FOR UPDATE`, so concurrent refreshes serialise instead of both rotating.
 - **Resource-exhaustion caps.** AI snapshot payloads are size-capped; the 100KB element-payload limit now counts UTF-8 bytes, not Unicode characters.
 - **Stricter production guard.** Startup rejects a JWT secret under 32 chars (blank/weak/default) and warns when `API_BASE_URL` is still localhost in production.
+
+## Audit Fixes — Follow-up Batch (2026-07-22)
+
+- **Deleting a used channel works.** Migration `202607220002` adds `ON DELETE CASCADE` to the page-referencing FKs (`element_events`, `sessions`, `ai_interactions`) and `ai_feedback → ai_interactions` (and `SET NULL` for `review_comments.snapshot_event`), so a channel with history no longer 500s on delete.
+- **Logout revokes the freshest token.** `handleLogout` reads the current refresh token from storage (the interceptor rotates it there) instead of stale React state, so signing out after a background refresh actually revokes the live token.
+- **Webhook SSRF guard.** Delivery resolves the target host and refuses any private/loopback/link-local/cloud-metadata address ([`core/ssrf.py`](backend/app/core/ssrf.py)); creation rejects obvious internal literals; the delivery client no longer follows redirects.
+- **Token redaction in logs.** The request logger redacts the share JWT in `/view/{token}` and the join code in `/invites/{code}` so bearer secrets don't land in access logs.
+- **Export/upload resource caps.** Export tiles and the page canvas are size-clamped (`MAX_TILE_PX`/`MAX_CANVAS_PX`), so arbitrary element dimensions can't request an enormous image; uploads are validated by **actual image content** (Pillow), not the client `Content-Type`, with a dimension cap.
+- **Deploy/DB hygiene.** `requirements.txt` is now fully pinned for reproducible builds; migration `202607220003` drops the unused branch expression index; the stale Phase-5 presence check now expects 2 connected users.
+
+> Still open (need a decision / larger effort, tracked for later): multi-instance realtime (Redis pub/sub), uploads → object storage/persistent disk, cookie-based auth, durable/idempotent webhooks, `CREATE INDEX CONCURRENTLY` migrations, a CI test suite, and the npm-11 lockfile quirk with fabric's optional native `canvas` dep.
