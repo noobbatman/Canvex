@@ -239,6 +239,7 @@ A full-codebase review against the implementation plan fixed ten bugs:
 - Database URL normalisation rewrites `postgres://` / `postgresql://` (what Render/Railway hand out) to `postgresql+asyncpg://` and strips `sslmode`, so the same code runs locally and in production.
 - Migrations run automatically on boot in production (FastAPI lifespan → `alembic upgrade head`); a failed migration aborts startup so a bad deploy fails loudly.
 - CORS is configured from `CORS_ALLOW_ORIGINS` (comma-separated Vercel domain(s)); the app refuses to boot in `ENVIRONMENT=production` with a wildcard origin or the default JWT secret.
+- External managed Postgres (e.g. **Supabase**, for a persistent free tier with pgvector) is supported via `DATABASE_SSL=require` — the app engine and Alembic both apply it. See [DEPLOYMENT.md](DEPLOYMENT.md) → *Supabase for Postgres*.
 - See [DEPLOYMENT.md](DEPLOYMENT.md) for the full first-to-last guide, including the Render/Vercel dashboard steps and the production checklist.
 
 ## Social & Institutional Sign-In (2026-07-22)

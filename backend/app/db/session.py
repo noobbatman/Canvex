@@ -4,6 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
+# Supabase / other external Postgres require SSL; Render's internal URL doesn't.
+_connect_args = {"ssl": settings.database_ssl} if settings.database_ssl else {}
+
 engine = create_async_engine(
     settings.database_url,
     # echo=True writes plain text around the JSON logging config (12.4); to
@@ -16,6 +19,7 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
     pool_timeout=30,
+    connect_args=_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(

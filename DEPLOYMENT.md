@@ -69,6 +69,38 @@ The `render.yaml` Blueprint provisions all four backend pieces at once.
 > free DB is deleted ~30 days after creation, so bump the plan if you need it
 > to persist beyond that.
 
+### Supabase for Postgres (persistent free tier)
+
+Render's free Postgres is deleted ~30 days after creation. Supabase gives a
+**persistent free Postgres with pgvector** — keep the backend, workers, and Redis
+on Render and point only the database at Supabase.
+
+1. Create a project at [supabase.com](https://supabase.com) (region near your
+   Render region). Choose a DB password without URL-special characters (or
+   percent-encode it in the connection string).
+2. **Enable pgvector:** dashboard → **Database → Extensions** → search `vector`
+   → enable. (The migrations also `CREATE EXTENSION IF NOT EXISTS` for
+   `pgcrypto` / `uuid-ossp` / `vector`, which the `postgres` role may run.)
+3. Copy the **Session pooler** connection string: dashboard → **Connect** →
+   *Session pooler*, port **5432**. It looks like
+   `postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`.
+   - Use the **session** pooler (5432) — it's IPv4 (works from Render) and keeps
+     the prepared statements asyncpg relies on. Avoid the **transaction** pooler
+     (6543), which breaks asyncpg prepared statements, and the direct
+     `db.<ref>.supabase.co` host, which is IPv6-only.
+4. On the Render **web service and both workers** → Environment set:
+   - `DATABASE_URL` = the session-pooler string
+   - `DATABASE_SSL` = `require` (Supabase requires TLS; the app supplies SSL the
+     asyncpg way and still auto-rewrites `postgresql://` → `postgresql+asyncpg://`)
+5. Redeploy the web service; boot-time migrations run against Supabase — watch for
+   `database migrations up to date`. Then you can delete the Render Postgres.
+
+> **Connections:** Supabase's free tier caps connections. The three services each
+> open pooled connections under load; the session pooler multiplexes, but if you
+> hit limits, lower `pool_size`/`max_overflow` in `backend/app/db/session.py`.
+> **Uploads still live on the API disk** — Supabase Storage (an object store) is a
+> good place to move them later (also fixes the upload-persistence audit item).
+
 ### Railway alternative
 
 Railway detects Python via Nixpacks and uses [`backend/Procfile`](backend/Procfile).

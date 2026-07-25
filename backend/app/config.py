@@ -30,6 +30,11 @@ def _normalize_database_url(url: str) -> str:
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://canvex:canvex@localhost:5432/canvex"
+    # asyncpg SSL mode for the DB connection. Empty → no SSL (Render's internal
+    # DB URL, local dev). External managed Postgres like Supabase requires SSL:
+    # set DATABASE_SSL=require. Accepts asyncpg's sslmode strings
+    # (disable/allow/prefer/require/verify-ca/verify-full).
+    database_ssl: str = ""
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret_key: str = "change-me-in-development"
     jwt_algorithm: str = "HS256"
